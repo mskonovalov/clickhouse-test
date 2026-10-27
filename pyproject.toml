@@ -1,7 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "software-engineer-python"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "clickhouse-connect",
+    "fastapi",
+    "pydantic-settings",
+    "uvicorn[standard]",
 ]
+
+[dependency-groups]
+dev = [
+    "httpx",
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rag_api"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
