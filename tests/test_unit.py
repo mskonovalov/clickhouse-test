@@ -1,12 +1,14 @@
 """Unit tests for the RAG API."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from rag_api.config import Settings, get_settings
-from rag_api.main import app
+from rag_api.main import app, get_search_handler
+from rag_api.schemas import DocumentResult
 
 
 def test_health_endpoint_returns_ok() -> None:
@@ -63,3 +65,87 @@ def test_settings_env_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert settings.clickhouse_password == "custom_pwd"
     assert settings.embedding_model == "custom/model"
     assert settings.embedder_max_workers == 8
+
+
+def test_search_with_default_stub_returns_200() -> None:
+    """Verify POST /search with the default stub returns 200 and matching schema."""
+    client = TestClient(app)
+    response = client.post("/search", json={"query": "lightdash"})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "results" in data
+    assert isinstance(data["results"], list)
+    assert len(data["results"]) >= 1
+    assert set(data["results"][0].keys()) == {"title", "body"}
+
+
+def test_search_with_dependency_override_and_default_limit() -> None:
+    """Verify POST /search uses default limit=5 and returns results from overridden dependency."""
+    captured_calls: list[tuple[str, int]] = []
+
+    async def fake_search_handler(query: str, limit: int) -> list[DocumentResult]:
+        captured_calls.append((query, limit))
+        return [
+            DocumentResult(title=f"doc-{i}.md", body=f"Body {i} for {query}")
+            for i in range(limit)
+        ]
+
+    app.dependency_overrides[get_search_handler] = lambda: fake_search_handler
+    try:
+        client = TestClient(app)
+        response = client.post("/search", json={"query": "lightdash"})
+
+        assert response.status_code == 200
+        assert captured_calls == [("lightdash", 5)]
+        data = response.json()
+        assert len(data["results"]) == 5
+        assert data["results"][0] == {"title": "doc-0.md", "body": "Body 0 for lightdash"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_search_custom_limit_and_whitespace_stripping() -> None:
+    """Verify POST /search strips whitespace on query and forwards custom limit."""
+    captured_calls: list[tuple[str, int]] = []
+
+    async def fake_search_handler(query: str, limit: int) -> list[DocumentResult]:
+        captured_calls.append((query, limit))
+        return [
+            DocumentResult(title=f"doc-{i}.md", body=f"Body {i}")
+            for i in range(limit)
+        ]
+
+    app.dependency_overrides[get_search_handler] = lambda: fake_search_handler
+    try:
+        client = TestClient(app)
+        response = client.post("/search", json={"query": "  lightdash  ", "limit": 3})
+
+        assert response.status_code == 200
+        assert captured_calls == [("lightdash", 3)]
+        assert len(response.json()["results"]) == 3
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"query": ""},
+        {"query": "   "},
+        {},
+        {"query": "lightdash", "limit": 0},
+        {"query": "lightdash", "limit": -1},
+        {"query": "lightdash", "limit": 51},
+        {"query": 123},
+        {"query": ["lightdash"]},
+        {"query": "lightdash", "limit": "not-an-int"},
+        {"query": "lightdash", "limit": 3.5},
+    ],
+)
+def test_search_validation_errors_return_422(payload: dict[str, Any]) -> None:
+    """Verify invalid POST /search payloads are rejected with HTTP 422."""
+    client = TestClient(app)
+    response = client.post("/search", json=payload)
+
+    assert response.status_code == 422
