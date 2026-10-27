@@ -18,6 +18,34 @@ services:
       nofile:
         soft: 262144
         hard: 262144
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "clickhouse-client --user \"$${CLICKHOUSE_USER}\" --password \"$${CLICKHOUSE_PASSWORD}\" --query \"SELECT count() FROM embeddings.vectors WHERE 1\" | grep -v '^0$$'",
+        ]
+      start_period: 60s
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: embeddings
+      CLICKHOUSE_USER: vectordbuser
+      CLICKHOUSE_PASSWORD: pwd_vectordb
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - huggingface-cache:/root/.cache/huggingface
+    depends_on:
+      clickhouse:
+        condition: service_healthy
 
 volumes:
   clickhouse-data:
+  huggingface-cache:
