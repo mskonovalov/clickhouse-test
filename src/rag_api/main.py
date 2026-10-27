@@ -26,10 +26,11 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             model_name=settings.embedding_model,
             max_workers=settings.embedder_max_workers,
         )
-        reranker = CrossEncoderReranker(
-            model_name=settings.reranker_model,
-            max_workers=settings.reranker_max_workers,
-        )
+        if settings.reranker_enabled:
+            reranker = CrossEncoderReranker(
+                model_name=settings.reranker_model,
+                max_workers=settings.reranker_max_workers,
+            )
         application.state.settings = settings
         application.state.repository = repository
         application.state.embedder = embedder
@@ -101,7 +102,8 @@ async def search(
     settings: SettingsDep,
 ) -> SearchResponse:
     """Search documents matching the query with optional cross-encoder reranking."""
-    if request.rerank and reranker is None:
+    should_rerank = request.rerank and settings.reranker_enabled
+    if should_rerank and reranker is None:
         raise HTTPException(status_code=503, detail="Reranker unavailable")
 
     embedding = await embedder.embed_query(request.query)
@@ -110,7 +112,7 @@ async def search(
             request.limit * settings.rerank_candidate_multiplier,
             settings.rerank_min_candidates,
         )
-        if request.rerank
+        if should_rerank
         else request.limit
     )
     try:
@@ -118,7 +120,7 @@ async def search(
     except DatabaseUnavailableError as exc:
         raise HTTPException(status_code=503, detail="Database unavailable") from exc
 
-    if request.rerank:
+    if should_rerank:
         assert reranker is not None
         results = await reranker.rerank(
             request.query,

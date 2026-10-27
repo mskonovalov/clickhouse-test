@@ -290,3 +290,48 @@ def test_lifespan_starts_and_serves_503_when_clickhouse_is_down_at_startup(
 
     assert fake_embedder.closed is True
     assert fake_reranker.closed is True
+
+
+def test_lifespan_skips_reranker_and_search_bypasses_reranking_when_reranker_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify RERANKER_ENABLED=false skips CrossEncoderReranker init and executes Stage-1-only search."""
+    fake_client = FakeAsyncClickHouseClient(rows=[(f"doc-{i}.md", f"Body {i}") for i in range(10)])
+    mock_get_async_client = AsyncMock(return_value=fake_client)
+    monkeypatch.setattr(
+        "rag_api.repository.clickhouse_connect.get_async_client",
+        mock_get_async_client,
+    )
+    fake_embedder = FakeEmbedder(vector=[0.1] * EXPECTED_EMBEDDING_DIM)
+    monkeypatch.setattr(
+        "rag_api.main.SentenceTransformerEmbedder",
+        lambda **_kwargs: fake_embedder,
+    )
+    reranker_init_called = False
+
+    def fail_if_called(**_kwargs: Any) -> None:
+        nonlocal reranker_init_called
+        reranker_init_called = True
+        raise AssertionError("CrossEncoderReranker should not be instantiated when reranker_enabled=False")
+
+    monkeypatch.setattr("rag_api.main.CrossEncoderReranker", fail_if_called)
+    monkeypatch.setattr(
+        "rag_api.main.get_settings",
+        lambda: Settings(reranker_enabled=False),
+    )
+
+    with TestClient(app) as client:
+        assert getattr(app.state, "reranker", None) is None
+        assert reranker_init_called is False
+
+        response = client.post("/search", json={"query": "lightdash", "limit": 3})
+        assert response.status_code == 200
+        results = response.json()["results"]
+        assert len(results) == 3
+        assert results[0] == {"title": "doc-0.md", "body": "Body 0"}
+        assert fake_client.queries[0][1] == {
+            "query_embedding": [0.1] * EXPECTED_EMBEDDING_DIM,
+            "limit": 3,
+        }
+
+    assert fake_embedder.closed is True

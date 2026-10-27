@@ -4,12 +4,12 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
-from clickhouse_connect.driver.exceptions import DatabaseError
+from clickhouse_connect.driver.exceptions import DatabaseError, StreamFailureError
 from conftest import FakeAsyncClickHouseClient
 
 from rag_api.config import Settings
 from rag_api.embedder import EXPECTED_EMBEDDING_DIM
-from rag_api.repository import VECTOR_SEARCH_SQL, VectorRepository
+from rag_api.repository import VECTOR_SEARCH_SQL, DatabaseUnavailableError, VectorRepository
 from rag_api.schemas import DocumentResult
 
 
@@ -103,6 +103,15 @@ def test_vector_repository_propagates_non_connectivity_database_errors() -> None
     repo = VectorRepository(client=fake_client)
 
     with pytest.raises(DatabaseError, match="Illegal types"):
+        asyncio.run(repo.search_by_vector([0.1] * EXPECTED_EMBEDDING_DIM, limit=5))
+
+
+def test_vector_repository_maps_stream_failure_error_to_database_unavailable() -> None:
+    """Verify mid-stream transport drops wrapped in StreamFailureError raise DatabaseUnavailableError."""
+    fake_client = FakeAsyncClickHouseClient(query_error=StreamFailureError("Stream closed unexpectedly"))
+    repo = VectorRepository(client=fake_client)
+
+    with pytest.raises(DatabaseUnavailableError, match="ClickHouse query failed due to connectivity"):
         asyncio.run(repo.search_by_vector([0.1] * EXPECTED_EMBEDDING_DIM, limit=5))
 
 

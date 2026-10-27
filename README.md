@@ -55,7 +55,7 @@ Executes a two-stage retrieval pipeline:
 Request fields:
 - `query` (`string`, required): Non-empty search query (leading/trailing whitespace is stripped).
 - `limit` (`int`, optional, default `5`, range `1..50`): Maximum number of matching chunks to return.
-- `rerank` (`bool`, optional, default `true`): Whether to apply second-stage cross-encoder reranking.
+- `rerank` (`bool`, optional, default `true`): Whether to apply second-stage cross-encoder reranking (when `RERANKER_ENABLED=true`, the default).
 
 ```bash
 curl -s -X POST http://localhost:8000/search \
@@ -125,7 +125,7 @@ curl -s -X POST http://localhost:8000/search \
    - `SentenceTransformerEmbedder` offloads synchronous, CPU-bound `SentenceTransformer.encode()` calls to a dedicated `ThreadPoolExecutor` via `loop.run_in_executor(...)` (PyTorch releases the GIL during C++ tensor operations), isolating model inference from FastAPI's default threadpool and keeping the `asyncio` event loop responsive.
 3. **Two-Stage Retrieval with Async `Reranker` Protocol & `CrossEncoderReranker` (`src/rag_api/reranker.py`)**
    - **Bi-Encoder vs. Cross-Encoder Trade-off**: Bi-encoders (`all-MiniLM-L6-v2`) encode queries and documents independently into fixed vectors, enabling fast sub-linear or vectorized `cosineDistance` candidate generation in ClickHouse, but compressing whole chunks into a single pooling vector can rank keyword-dense YAML frontmatter (`sidebar_label: 'Lightdash'`) nearly as high as actual documentation prose. Cross-encoders (`cross-encoder/ms-marco-MiniLM-L-6-v2`) process `(query, document)` pairs jointly with full self-attention across all tokens, producing substantially higher precision on top-N candidates at the cost of \(O(N)\) forward passes.
-   - **Over-Fetch + Rerank Pipeline**: When `rerank=True` (default), `POST /search` over-fetches `max(limit * rerank_candidate_multiplier, rerank_min_candidates)` (default `max(limit * 4, 20)`) candidates from ClickHouse and reranks them to `top_n=limit` on a dedicated `"reranker"` `ThreadPoolExecutor`, breaking score ties deterministically by Stage-1 rank order and validating score finiteness (`math.isfinite`) before sorting.
+   - **Over-Fetch + Rerank Pipeline**: When `rerank=True` (default) and `RERANKER_ENABLED=true` (default), `POST /search` over-fetches `max(limit * rerank_candidate_multiplier, rerank_min_candidates)` (default `max(limit * 4, 20)`) candidates from ClickHouse and reranks them to `top_n=limit` on a dedicated `"reranker"` `ThreadPoolExecutor`, breaking score ties deterministically by Stage-1 rank order and validating score finiteness (`math.isfinite`) before sorting. Setting `RERANKER_ENABLED=false` skips loading the cross-encoder model at startup and runs Stage-1 vector search only.
 4. **Async ClickHouse `VectorRepository` (`src/rag_api/repository.py`)**
    - Uses `clickhouse_connect.get_async_client(..., autogenerate_session_id=False)` with lazy connection initialization under an `asyncio.Lock`.
    - Disabling `autogenerate_session_id` prevents concurrent `async` requests from sharing a single ClickHouse `session_id` and failing with `SESSION_IS_LOCKED`.

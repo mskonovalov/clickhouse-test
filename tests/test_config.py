@@ -19,6 +19,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
         "CLICKHOUSE_PASSWORD",
         "EMBEDDING_MODEL",
         "EMBEDDER_MAX_WORKERS",
+        "RERANKER_ENABLED",
         "RERANKER_MODEL",
         "RERANKER_MAX_WORKERS",
         "RERANK_CANDIDATE_MULTIPLIER",
@@ -35,6 +36,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     assert settings.clickhouse_password == "pwd_vectordb"
     assert settings.embedding_model == "sentence-transformers/all-MiniLM-L6-v2"
     assert settings.embedder_max_workers == 4
+    assert settings.reranker_enabled is True
     assert settings.reranker_model == "cross-encoder/ms-marco-MiniLM-L-6-v2"
     assert settings.reranker_max_workers == 2
     assert settings.rerank_candidate_multiplier == 4
@@ -51,6 +53,7 @@ def test_settings_env_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     monkeypatch.setenv("CLICKHOUSE_PASSWORD", "custom_pwd")
     monkeypatch.setenv("EMBEDDING_MODEL", "custom/model")
     monkeypatch.setenv("EMBEDDER_MAX_WORKERS", "8")
+    monkeypatch.setenv("RERANKER_ENABLED", "false")
     monkeypatch.setenv("RERANKER_MODEL", "custom/reranker")
     monkeypatch.setenv("RERANKER_MAX_WORKERS", "4")
     monkeypatch.setenv("RERANK_CANDIDATE_MULTIPLIER", "6")
@@ -65,6 +68,7 @@ def test_settings_env_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert settings.clickhouse_password == "custom_pwd"
     assert settings.embedding_model == "custom/model"
     assert settings.embedder_max_workers == 8
+    assert settings.reranker_enabled is False
     assert settings.reranker_model == "custom/reranker"
     assert settings.reranker_max_workers == 4
     assert settings.rerank_candidate_multiplier == 6

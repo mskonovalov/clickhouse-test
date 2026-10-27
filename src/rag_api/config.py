@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     clickhouse_password: str = "pwd_vectordb"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedder_max_workers: int = Field(default=4, ge=1)
+    reranker_enabled: bool = True
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     reranker_max_workers: int = Field(default=2, ge=1)
     rerank_candidate_multiplier: int = Field(default=4, ge=1)

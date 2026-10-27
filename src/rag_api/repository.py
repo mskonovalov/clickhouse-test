@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Any, Protocol, Self
 
 import clickhouse_connect
-from clickhouse_connect.driver.exceptions import OperationalError
+from clickhouse_connect.driver.exceptions import OperationalError, StreamFailureError
 
 from rag_api.config import Settings
 from rag_api.embedder import EXPECTED_EMBEDDING_DIM
@@ -161,7 +161,7 @@ class VectorRepository:
                 VECTOR_SEARCH_SQL,
                 parameters={"query_embedding": embedding, "limit": limit},
             )
-        except (OperationalError, OSError, ConnectionError, TimeoutError) as exc:
+        except (OperationalError, StreamFailureError, OSError, ConnectionError, TimeoutError) as exc:
             raise DatabaseUnavailableError("ClickHouse query failed due to connectivity") from exc
 
         return [DocumentResult(title=_extract_title(row[0]), body=str(row[1])) for row in result.result_rows]
