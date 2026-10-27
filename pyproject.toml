@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "httpx",
     "pytest",
+    "ruff>=0.17.3",
 ]
 
 [[tool.uv.index]]
@@ -39,4 +40,30 @@ testpaths = ["tests"]
 markers = [
     "integration: tests requiring live ClickHouse instance",
 ]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = [".agents", ".claude", ".revmux"]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "C4",
+    "UP",
+    "SIM",
+]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rag_api"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
 

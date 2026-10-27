@@ -31,9 +31,7 @@ class FakeSentenceTransformerModel:
         *,
         reported_dim: int | None = None,
     ) -> None:
-        self.vector = (
-            list(vector) if vector is not None else [0.1] * EXPECTED_EMBEDDING_DIM
-        )
+        self.vector = list(vector) if vector is not None else [0.1] * EXPECTED_EMBEDDING_DIM
         self._reported_dim = reported_dim
         self.calls: list[tuple[str, bool, str]] = []
 
@@ -72,9 +70,7 @@ class FakeCrossEncoderModel:
         """Record sentence pairs and worker thread name and return configured scores."""
         self.calls.append((list(sentences), threading.current_thread().name))
         values = (
-            self.scores
-            if self.scores is not None
-            else [float(len(sentences) - idx) for idx in range(len(sentences))]
+            self.scores if self.scores is not None else [float(len(sentences) - idx) for idx in range(len(sentences))]
         )
         return FakeEncodedVector(values) if self.as_array else list(values)
 

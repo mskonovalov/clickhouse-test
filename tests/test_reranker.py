@@ -4,10 +4,10 @@ import asyncio
 import math
 
 import pytest
+from conftest import FakeCrossEncoderModel
 
 from rag_api.reranker import CrossEncoderReranker
 from rag_api.schemas import DocumentResult
-from conftest import FakeCrossEncoderModel
 
 
 def test_cross_encoder_reranker_runs_on_worker_thread_sorts_deterministically_and_closes() -> None:

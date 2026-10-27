@@ -3,9 +3,9 @@
 import asyncio
 
 import pytest
+from conftest import FakeSentenceTransformerModel
 
 from rag_api.embedder import EXPECTED_EMBEDDING_DIM, SentenceTransformerEmbedder
-from conftest import FakeSentenceTransformerModel
 
 
 def test_sentence_transformer_embedder_runs_on_worker_thread_and_closes() -> None:

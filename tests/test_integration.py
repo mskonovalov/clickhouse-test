@@ -61,14 +61,10 @@ def test_end_to_end_rag_retrieval_with_real_embedder_reranker_and_clickhouse() -
         assert not reranked_results[0]["body"].lstrip().startswith("sidebar_label:")
 
         prose_indices = [
-            idx
-            for idx, item in enumerate(reranked_results)
-            if not item["body"].lstrip().startswith("sidebar_label:")
+            idx for idx, item in enumerate(reranked_results) if not item["body"].lstrip().startswith("sidebar_label:")
         ]
         frontmatter_indices = [
-            idx
-            for idx, item in enumerate(reranked_results)
-            if item["body"].lstrip().startswith("sidebar_label:")
+            idx for idx, item in enumerate(reranked_results) if item["body"].lstrip().startswith("sidebar_label:")
         ]
         assert prose_indices
         if frontmatter_indices:
@@ -81,9 +77,7 @@ def test_end_to_end_rag_retrieval_with_real_embedder_reranker_and_clickhouse() -
         assert stage_one_response.status_code == 200
         stage_one_results = stage_one_response.json()["results"]
         assert len(stage_one_results) == 5
-        assert "lightdash-and-clickhouse.md" in [
-            item["title"] for item in stage_one_results
-        ]
+        assert "lightdash-and-clickhouse.md" in [item["title"] for item in stage_one_results]
 
         limit_two_response = client.post(
             "/search",

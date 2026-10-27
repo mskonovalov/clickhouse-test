@@ -73,9 +73,7 @@ class SentenceTransformerEmbedder:
 
         self._model_name = model_name
         self._expected_dim = expected_dim
-        self._model: SentenceTransformerModelProtocol = (
-            model if model is not None else SentenceTransformer(model_name)
-        )
+        self._model: SentenceTransformerModelProtocol = model if model is not None else SentenceTransformer(model_name)
 
         get_dim = getattr(
             self._model,
@@ -86,8 +84,7 @@ class SentenceTransformerEmbedder:
             model_dim = get_dim()
             if isinstance(model_dim, int) and model_dim != self._expected_dim:
                 raise ValueError(
-                    f"Model {model_name!r} produces {model_dim}-dimensional embeddings, "
-                    f"expected {self._expected_dim}"
+                    f"Model {model_name!r} produces {model_dim}-dimensional embeddings, expected {self._expected_dim}"
                 )
 
         self._executor = ThreadPoolExecutor(
@@ -100,9 +97,7 @@ class SentenceTransformerEmbedder:
         encoded = self._model.encode(text, convert_to_numpy=True)
         vector = [float(value) for value in encoded.tolist()]
         if len(vector) != self._expected_dim:
-            raise ValueError(
-                f"Expected {self._expected_dim}-dimensional embedding, got {len(vector)}"
-            )
+            raise ValueError(f"Expected {self._expected_dim}-dimensional embedding, got {len(vector)}")
         return vector
 
     async def embed_query(self, text: str) -> list[float]:

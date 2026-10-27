@@ -60,9 +60,7 @@ class CrossEncoderReranker:
             raise ValueError("max_workers must be at least 1")
 
         self._model_name = model_name
-        self._model: CrossEncoderModelProtocol = (
-            model if model is not None else CrossEncoder(model_name)
-        )
+        self._model: CrossEncoderModelProtocol = model if model is not None else CrossEncoder(model_name)
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="reranker",
@@ -77,14 +75,10 @@ class CrossEncoderReranker:
         """Synchronously score and sort candidate documents on a worker thread."""
         pairs = [(query, doc.body) for doc in documents]
         raw_scores = self._model.predict(pairs)
-        score_values = (
-            raw_scores.tolist() if hasattr(raw_scores, "tolist") else raw_scores
-        )
+        score_values = raw_scores.tolist() if hasattr(raw_scores, "tolist") else raw_scores
         scores = [float(score) for score in score_values]
         if len(scores) != len(documents):
-            raise ValueError(
-                f"Expected {len(documents)} reranker scores, got {len(scores)}"
-            )
+            raise ValueError(f"Expected {len(documents)} reranker scores, got {len(scores)}")
         if not all(math.isfinite(score) for score in scores):
             raise ValueError("Reranker produced non-finite score")
 

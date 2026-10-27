@@ -5,13 +5,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 from clickhouse_connect.driver.exceptions import OperationalError
+from conftest import FakeAsyncClickHouseClient, FakeEmbedder, FakeReranker
 from fastapi.testclient import TestClient
 
 from rag_api.config import Settings
 from rag_api.embedder import EXPECTED_EMBEDDING_DIM
 from rag_api.main import app, get_app_settings, get_embedder, get_repository, get_reranker
 from rag_api.repository import VectorRepository
-from conftest import FakeAsyncClickHouseClient, FakeEmbedder, FakeReranker
 
 
 def test_health_endpoint_returns_ok() -> None:
@@ -42,9 +42,7 @@ def test_health_endpoint_returns_503_when_database_unavailable() -> None:
 
 def test_search_with_dependency_override_and_default_limit() -> None:
     """Verify POST /search with default rerank=True over-fetches 20 candidates and reranks to top 5."""
-    fake_client = FakeAsyncClickHouseClient(
-        rows=[(f"doc-{i}.md", f"Body {i} for lightdash") for i in range(25)]
-    )
+    fake_client = FakeAsyncClickHouseClient(rows=[(f"doc-{i}.md", f"Body {i} for lightdash") for i in range(25)])
     repo = VectorRepository(client=fake_client)
     fake_embedder = FakeEmbedder(vector=[0.25] * EXPECTED_EMBEDDING_DIM)
     fake_reranker = FakeReranker(reverse=True)
@@ -74,9 +72,7 @@ def test_search_with_dependency_override_and_default_limit() -> None:
 
 def test_search_with_rerank_false_bypasses_reranker_and_queries_exact_limit() -> None:
     """Verify POST /search with rerank=False fetches request.limit directly and does not call reranker."""
-    fake_client = FakeAsyncClickHouseClient(
-        rows=[(f"doc-{i}.md", f"Body {i}") for i in range(10)]
-    )
+    fake_client = FakeAsyncClickHouseClient(rows=[(f"doc-{i}.md", f"Body {i}") for i in range(10)])
     repo = VectorRepository(client=fake_client)
     fake_embedder = FakeEmbedder(vector=[0.5] * EXPECTED_EMBEDDING_DIM)
     fake_reranker = FakeReranker(reverse=True)
@@ -105,9 +101,7 @@ def test_search_with_rerank_false_bypasses_reranker_and_queries_exact_limit() ->
 
 def test_search_custom_limit_and_whitespace_stripping() -> None:
     """Verify POST /search strips whitespace on query and computes candidate_limit from settings."""
-    fake_client = FakeAsyncClickHouseClient(
-        rows=[(f"doc-{i}.md", f"Body {i}") for i in range(50)]
-    )
+    fake_client = FakeAsyncClickHouseClient(rows=[(f"doc-{i}.md", f"Body {i}") for i in range(50)])
     repo = VectorRepository(client=fake_client)
     fake_embedder = FakeEmbedder(vector=[0.5] * EXPECTED_EMBEDDING_DIM)
     fake_reranker = FakeReranker()
@@ -134,9 +128,7 @@ def test_search_custom_limit_and_whitespace_stripping() -> None:
 
 def test_search_rerank_min_candidates_floor_applies_for_small_limit() -> None:
     """Verify POST /search enforces rerank_min_candidates floor when limit * multiplier < min_candidates."""
-    fake_client = FakeAsyncClickHouseClient(
-        rows=[(f"doc-{i}.md", f"Body {i}") for i in range(25)]
-    )
+    fake_client = FakeAsyncClickHouseClient(rows=[(f"doc-{i}.md", f"Body {i}") for i in range(25)])
     repo = VectorRepository(client=fake_client)
     fake_embedder = FakeEmbedder(vector=[0.5] * EXPECTED_EMBEDDING_DIM)
     fake_reranker = FakeReranker(reverse=True)
@@ -252,9 +244,7 @@ def test_search_returns_503_when_reranker_not_initialized_on_app_state() -> None
 
 def test_search_returns_503_when_clickhouse_query_fails_with_operational_error() -> None:
     """Verify POST /search returns 503 when client.query raises OperationalError mid-run."""
-    fake_client = FakeAsyncClickHouseClient(
-        query_error=OperationalError("Connection reset by peer")
-    )
+    fake_client = FakeAsyncClickHouseClient(query_error=OperationalError("Connection reset by peer"))
     repo = VectorRepository(client=fake_client)
     fake_embedder = FakeEmbedder(vector=[0.1] * EXPECTED_EMBEDDING_DIM)
     fake_reranker = FakeReranker()

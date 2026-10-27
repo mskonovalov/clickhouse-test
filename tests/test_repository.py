@@ -5,12 +5,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 from clickhouse_connect.driver.exceptions import DatabaseError
+from conftest import FakeAsyncClickHouseClient
 
 from rag_api.config import Settings
 from rag_api.embedder import EXPECTED_EMBEDDING_DIM
 from rag_api.repository import VECTOR_SEARCH_SQL, VectorRepository
 from rag_api.schemas import DocumentResult
-from conftest import FakeAsyncClickHouseClient
 
 
 def test_vector_repository_create_connects_lazily_and_disables_autogenerate_session_id(
@@ -51,9 +51,7 @@ def test_vector_repository_ping_handles_success_failure_and_exceptions() -> None
     """Verify VectorRepository.ping returns True/False and catches connection errors."""
     ok_repo = VectorRepository(client=FakeAsyncClickHouseClient(ping_result=True))
     false_repo = VectorRepository(client=FakeAsyncClickHouseClient(ping_result=False))
-    error_repo = VectorRepository(
-        client=FakeAsyncClickHouseClient(ping_error=RuntimeError("Connection refused"))
-    )
+    error_repo = VectorRepository(client=FakeAsyncClickHouseClient(ping_error=RuntimeError("Connection refused")))
 
     assert asyncio.run(ok_repo.ping()) is True
     assert asyncio.run(false_repo.ping()) is False
@@ -101,9 +99,7 @@ def test_vector_repository_search_by_vector_validates_inputs() -> None:
 
 def test_vector_repository_propagates_non_connectivity_database_errors() -> None:
     """Verify non-connectivity DatabaseError from ClickHouse is not masked as DatabaseUnavailableError."""
-    fake_client = FakeAsyncClickHouseClient(
-        query_error=DatabaseError("Code: 43. DB::Exception: Illegal types")
-    )
+    fake_client = FakeAsyncClickHouseClient(query_error=DatabaseError("Code: 43. DB::Exception: Illegal types"))
     repo = VectorRepository(client=fake_client)
 
     with pytest.raises(DatabaseError, match="Illegal types"):

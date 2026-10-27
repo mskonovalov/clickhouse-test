@@ -94,7 +94,7 @@ curl -s -X POST http://localhost:8000/search \
 
 ---
 
-## Running Tests
+## Running Tests & Linting
 
 - **Run all tests (unit + live integration tests):**
   ```bash
@@ -107,6 +107,11 @@ curl -s -X POST http://localhost:8000/search \
 - **Run live ClickHouse + embedding & reranking model integration tests only:**
   ```bash
   uv run pytest -m integration -v
+  ```
+- **Lint and check formatting with `ruff`:**
+  ```bash
+  uv run ruff check .
+  uv run ruff format --check .
   ```
 
 ---

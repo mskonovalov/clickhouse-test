@@ -151,9 +151,7 @@ class VectorRepository:
         if not embedding:
             raise ValueError("embedding must not be empty")
         if len(embedding) != EXPECTED_EMBEDDING_DIM:
-            raise ValueError(
-                f"embedding must have length {EXPECTED_EMBEDDING_DIM}, got {len(embedding)}"
-            )
+            raise ValueError(f"embedding must have length {EXPECTED_EMBEDDING_DIM}, got {len(embedding)}")
         if limit < 1:
             raise ValueError("limit must be at least 1")
 
@@ -166,10 +164,7 @@ class VectorRepository:
         except (OperationalError, OSError, ConnectionError, TimeoutError) as exc:
             raise DatabaseUnavailableError("ClickHouse query failed due to connectivity") from exc
 
-        return [
-            DocumentResult(title=_extract_title(row[0]), body=str(row[1]))
-            for row in result.result_rows
-        ]
+        return [DocumentResult(title=_extract_title(row[0]), body=str(row[1])) for row in result.result_rows]
 
     async def close(self) -> None:
         """Close the underlying async ClickHouse client if one was created."""
