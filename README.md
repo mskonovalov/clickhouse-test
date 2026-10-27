@@ -1,6 +1,6 @@
 # ClickHouse RAG Retrieval API
 
-A FastAPI service that provides the retrieval component of a Retrieval-Augmented Generation (RAG) pipeline backed by ClickHouse vector search (`cosineDistance`) and `sentence-transformers/all-MiniLM-L6-v2`.
+A FastAPI service that provides a two-stage Retrieval-Augmented Generation (RAG) retrieval pipeline backed by ClickHouse vector search (`cosineDistance` with `sentence-transformers/all-MiniLM-L6-v2`) and second-stage cross-encoder reranking (`cross-encoder/ms-marco-MiniLM-L-6-v2`).
 
 ---
 
@@ -48,36 +48,48 @@ curl -s http://localhost:8000/health
 
 ### Semantic Document Search (`POST /search`)
 
-Encodes the query string into a 384-dimensional vector using `sentence-transformers/all-MiniLM-L6-v2` and queries ClickHouse ordered by `cosineDistance(embeddings, query_embedding) ASC`.
+Executes a two-stage retrieval pipeline:
+1. **Stage 1 — Candidate Generation (Bi-Encoder + ClickHouse `cosineDistance`)**: Encodes `query` into a 384-dimensional vector using `sentence-transformers/all-MiniLM-L6-v2` and fetches `max(limit * rerank_candidate_multiplier, rerank_min_candidates)` (default `max(limit * 4, 20)`) candidate chunks from ClickHouse ordered by `cosineDistance(embeddings, query_embedding) ASC` (or `limit` directly when `rerank` is `false`).
+2. **Stage 2 — Cross-Encoder Reranking (`cross-encoder/ms-marco-MiniLM-L-6-v2`)**: Scores each `(query, chunk_body)` pair jointly with full cross-attention and returns the top `limit` chunks ordered by descending relevance score. This promotes substantive documentation prose ahead of noisy YAML frontmatter (`sidebar_label: ...`) chunks that may have high bi-encoder cosine similarity.
 
+Request fields:
 - `query` (`string`, required): Non-empty search query (leading/trailing whitespace is stripped).
 - `limit` (`int`, optional, default `5`, range `1..50`): Maximum number of matching chunks to return.
+- `rerank` (`bool`, optional, default `true`): Whether to apply second-stage cross-encoder reranking.
 
 ```bash
 curl -s -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
-  -d '{"query": "Can I create a visualization with Lightdash?", "limit": 3}'
+  -d '{"query": "Can I create a visualization with Lightdash?", "limit": 3, "rerank": true}'
 ```
 
-Example response:
+Example response (`rerank: true`):
 
 ```json
 {
   "results": [
     {
       "title": "lightdash-and-clickhouse.md",
-      "body": "The \nExplore\n page is made up of five main areas:\n\n\n\n\nDimensions and Metrics\n — all fields available on the selected table ..."
+      "body": "Connecting Lightdash to ClickHouse\u200b\n\n\nLightdash is an open-source BI tool that transforms your dbt project into a full-stack BI platform..."
     },
     {
       "title": "lightdash-and-clickhouse.md",
-      "body": "sidebar_label: 'Lightdash'\nsidebar_position: 131\nslug: /integrations/lightdash\nkeywords: ['clickhouse', ..."
+      "body": "4. Explore and visualize your data in Lightdash\u200b\n\n\nOnce you've deployed your dbt models and connected Lightdash to ClickHouse..."
     },
     {
-      "title": "index.md",
-      "body": "sidebar_label: 'Overview'\nsidebar_position: 1\nkeywords: ['ClickHouse', 'connect', 'Luzmo', 'Explo', 'Fabi.ai', 'Tableau',..."
+      "title": "lightdash-and-clickhouse.md",
+      "body": "The \nExplore\n page is made up of five main areas:\n\n\n\n\nDimensions and Metrics\n — all fields available on the selected table ..."
     }
   ]
 }
+```
+
+To bypass second-stage reranking and return raw Stage-1 `cosineDistance` order:
+
+```bash
+curl -s -X POST http://localhost:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Can I create a visualization with Lightdash?", "limit": 3, "rerank": false}'
 ```
 
 ---
@@ -92,7 +104,7 @@ Example response:
   ```bash
   uv run pytest -m "not integration" -v
   ```
-- **Run live ClickHouse + embedding model integration tests only:**
+- **Run live ClickHouse + embedding & reranking model integration tests only:**
   ```bash
   uv run pytest -m integration -v
   ```
@@ -106,11 +118,14 @@ Example response:
 2. **Swappable Async `Embedder` Protocol & Dedicated `ThreadPoolExecutor` (`src/rag_api/embedder.py`)**
    - `Embedder` is defined as an async `typing.Protocol` (`async def embed_query(self, text: str) -> list[float]`). Swapping local CPU inference for an external embedding service (e.g., OpenAI, Cohere, or an internal Text Embeddings Inference server via `httpx.AsyncClient`) requires zero changes to route handlers or callers.
    - `SentenceTransformerEmbedder` offloads synchronous, CPU-bound `SentenceTransformer.encode()` calls to a dedicated `ThreadPoolExecutor` via `loop.run_in_executor(...)` (PyTorch releases the GIL during C++ tensor operations), isolating model inference from FastAPI's default threadpool and keeping the `asyncio` event loop responsive.
-3. **Async ClickHouse `VectorRepository` (`src/rag_api/repository.py`)**
+3. **Two-Stage Retrieval with Async `Reranker` Protocol & `CrossEncoderReranker` (`src/rag_api/reranker.py`)**
+   - **Bi-Encoder vs. Cross-Encoder Trade-off**: Bi-encoders (`all-MiniLM-L6-v2`) encode queries and documents independently into fixed vectors, enabling fast sub-linear or vectorized `cosineDistance` candidate generation in ClickHouse, but compressing whole chunks into a single pooling vector can rank keyword-dense YAML frontmatter (`sidebar_label: 'Lightdash'`) nearly as high as actual documentation prose. Cross-encoders (`cross-encoder/ms-marco-MiniLM-L-6-v2`) process `(query, document)` pairs jointly with full self-attention across all tokens, producing substantially higher precision on top-N candidates at the cost of \(O(N)\) forward passes.
+   - **Over-Fetch + Rerank Pipeline**: When `rerank=True` (default), `POST /search` over-fetches `max(limit * rerank_candidate_multiplier, rerank_min_candidates)` (default `max(limit * 4, 20)`) candidates from ClickHouse and reranks them to `top_n=limit` on a dedicated `"reranker"` `ThreadPoolExecutor`, breaking score ties deterministically by Stage-1 rank order and validating score finiteness (`math.isfinite`) before sorting.
+4. **Async ClickHouse `VectorRepository` (`src/rag_api/repository.py`)**
    - Uses `clickhouse_connect.get_async_client(..., autogenerate_session_id=False)` with lazy connection initialization under an `asyncio.Lock`.
    - Disabling `autogenerate_session_id` prevents concurrent `async` requests from sharing a single ClickHouse `session_id` and failing with `SESSION_IS_LOCKED`.
    - Deferring client creation until the first request allows the application to boot cleanly even if ClickHouse is temporarily unreachable at startup, serving `503 Service Unavailable` on `/health` and `/search` and recovering automatically once ClickHouse comes online.
-4. **Multi-Stage Non-Root Docker Build & CPU-Only PyTorch on Linux (`Dockerfile`, `pyproject.toml`, `docker-compose.yml`)**
+5. **Multi-Stage Non-Root Docker Build & CPU-Only PyTorch on Linux (`Dockerfile`, `pyproject.toml`, `docker-compose.yml`)**
    - `pyproject.toml` pins `torch` on Linux to the official PyTorch CPU wheel index (`https://download.pytorch.org/whl/cpu`) via environment markers while keeping standard PyPI wheels on macOS, avoiding ~2.5 GB of unnecessary CUDA packages in the Linux container image.
    - Multi-stage `Dockerfile` builds the virtual environment in `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` and copies only `/app/.venv` into a minimal `python:3.12-slim-bookworm` runtime image running as non-root `appuser` (UID/GID `10001`).
 
@@ -120,8 +135,8 @@ Example response:
 
 - **Document-Level Deduplication / Grouping by `title`**: Because `embeddings.vectors` stores multiple chunks per Markdown file (`metadata` is a JSON object such as `{"source_file": "lightdash-and-clickhouse.md"}` from which `source_file` is extracted as `title`, and `document` holds the chunk text), matching chunks are currently returned as-is so multiple chunks from the same document can appear in the top-K results. Depending on downstream prompt construction needs, we can deduplicate by the extracted `source_file` in SQL (`LIMIT 1 BY JSONExtractString(metadata, 'source_file')`) or group adjacent chunks per document in Python.
 - **Vector Similarity Index (`vector_similarity`)**: For larger datasets beyond exhaustive `cosineDistance` scans, add an HNSW vector similarity index on `vectors.embeddings` in ClickHouse.
-- **Hybrid Search & Reranking**: Combine ClickHouse full-text / BM25 keyword matching with vector cosine distance (Reciprocal Rank Fusion) followed by a cross-encoder reranker.
-- **Query Embedding Cache & Observability**: Add an LRU/Redis cache for repeated query embeddings and OpenTelemetry traces/metrics around embedding latency and ClickHouse query duration.
+- **Hybrid Search (BM25 + Vector RRF)**: Combine ClickHouse full-text / BM25 keyword matching with vector cosine distance via Reciprocal Rank Fusion before feeding candidates into the cross-encoder reranker.
+- **Query Embedding Cache & Observability**: Add an LRU/Redis cache for repeated query embeddings and OpenTelemetry traces/metrics around embedding latency, ClickHouse query duration, and cross-encoder reranking latency.
 
 ---
 
