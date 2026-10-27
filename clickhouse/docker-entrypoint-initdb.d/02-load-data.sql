@@ -8,4 +8,5 @@ SELECT id, document, metadata, embeddings
 FROM url(
     'https://huggingface.co/datasets/ClickHouse/software-engineer-python-interview-dataset/resolve/main/data/train-00000-of-00001.parquet',
     'Parquet'
-);
+)
+WHERE (SELECT count() FROM embeddings.vectors) = 0;

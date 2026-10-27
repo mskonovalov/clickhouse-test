@@ -14,7 +14,7 @@ Starts both ClickHouse (automatically initializing the `embeddings.vectors` tabl
 docker compose up --build -d
 ```
 
- Both ClickHouse data (`clickhouse-data`) and the Hugging Face model weights (`huggingface-cache`) are persisted in named Docker volumes so subsequent restarts and rebuilds are instantaneous.
+Both ClickHouse data (`clickhouse-data`) and the Hugging Face model weights (`huggingface-cache`) are persisted in named Docker volumes so subsequent restarts and rebuilds are instantaneous. Initialization is idempotent (`CLICKHOUSE_ALWAYS_RUN_INITDB_SCRIPTS: 1` with an empty-table guard in `02-load-data.sql`), and you can reset all volumes from scratch at any time with `docker compose down -v`.
 
 ### Option 2: Run the API Locally with `uv`
 

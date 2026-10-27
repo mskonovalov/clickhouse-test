@@ -6,8 +6,10 @@ from collections.abc import Sequence
 from typing import Any, Protocol, Self
 
 import clickhouse_connect
+from clickhouse_connect.driver.exceptions import OperationalError
 
 from rag_api.config import Settings
+from rag_api.embedder import EXPECTED_EMBEDDING_DIM
 from rag_api.schemas import DocumentResult
 
 VECTOR_SEARCH_SQL = """
@@ -135,18 +137,23 @@ class VectorRepository:
         """Find the nearest document chunks by cosine distance.
 
         Args:
-            embedding: Query embedding vector (must be non-empty).
+            embedding: Query embedding vector (must be 384-dimensional).
             limit: Maximum number of results to return.
 
         Returns:
             Ordered list of DocumentResult items from closest to farthest.
 
         Raises:
-            ValueError: If embedding is empty or limit is less than 1.
-            DatabaseUnavailableError: If ClickHouse cannot be reached or the query fails.
+            ValueError: If embedding is empty, does not have length 384, or limit < 1.
+            DatabaseUnavailableError: If ClickHouse cannot be reached or the query fails due to
+                connectivity/transport errors.
         """
         if not embedding:
             raise ValueError("embedding must not be empty")
+        if len(embedding) != EXPECTED_EMBEDDING_DIM:
+            raise ValueError(
+                f"embedding must have length {EXPECTED_EMBEDDING_DIM}, got {len(embedding)}"
+            )
         if limit < 1:
             raise ValueError("limit must be at least 1")
 
@@ -156,8 +163,8 @@ class VectorRepository:
                 VECTOR_SEARCH_SQL,
                 parameters={"query_embedding": embedding, "limit": limit},
             )
-        except Exception as exc:
-            raise DatabaseUnavailableError("ClickHouse query failed") from exc
+        except (OperationalError, OSError, ConnectionError, TimeoutError) as exc:
+            raise DatabaseUnavailableError("ClickHouse query failed due to connectivity") from exc
 
         return [
             DocumentResult(title=_extract_title(row[0]), body=str(row[1]))

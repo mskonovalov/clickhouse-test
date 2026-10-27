@@ -18,5 +18,5 @@ class Settings(BaseSettings):
 
 
 def get_settings() -> Settings:
-    """Provide application settings for FastAPI dependency injection."""
+    """Load application settings from environment variables and .env file."""
     return Settings()

@@ -7,6 +7,8 @@ from typing import Protocol
 
 from sentence_transformers import SentenceTransformer
 
+EXPECTED_EMBEDDING_DIM = 384
+
 
 class EncodedVectorProtocol(Protocol):
     """Protocol for an array-like embedding output supporting .tolist()."""
@@ -49,6 +51,7 @@ class SentenceTransformerEmbedder:
         model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
         max_workers: int = 4,
         *,
+        expected_dim: int = EXPECTED_EMBEDDING_DIM,
         model: SentenceTransformerModelProtocol | None = None,
     ) -> None:
         """Initialize the local SentenceTransformer model and dedicated thread pool.
@@ -56,27 +59,51 @@ class SentenceTransformerEmbedder:
         Args:
             model_name: Hugging Face model identifier to load when model is not injected.
             max_workers: Number of worker threads in the dedicated executor (must be >= 1).
+            expected_dim: Required output embedding dimension (defaults to 384).
             model: Optional pre-built model instance for unit testing without loading weights.
 
         Raises:
-            ValueError: If max_workers is less than 1.
+            ValueError: If max_workers < 1, expected_dim < 1, or the loaded model's embedding
+                dimension does not match expected_dim.
         """
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
+        if expected_dim < 1:
+            raise ValueError("expected_dim must be at least 1")
 
         self._model_name = model_name
+        self._expected_dim = expected_dim
         self._model: SentenceTransformerModelProtocol = (
             model if model is not None else SentenceTransformer(model_name)
         )
+
+        get_dim = getattr(
+            self._model,
+            "get_embedding_dimension",
+            getattr(self._model, "get_sentence_embedding_dimension", None),
+        )
+        if callable(get_dim):
+            model_dim = get_dim()
+            if isinstance(model_dim, int) and model_dim != self._expected_dim:
+                raise ValueError(
+                    f"Model {model_name!r} produces {model_dim}-dimensional embeddings, "
+                    f"expected {self._expected_dim}"
+                )
+
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="embedder",
         )
 
     def _encode_sync(self, text: str) -> list[float]:
-        """Synchronously encode text on a worker thread and return a list of floats."""
+        """Synchronously encode text on a worker thread and return a validated list of floats."""
         encoded = self._model.encode(text, convert_to_numpy=True)
-        return [float(value) for value in encoded.tolist()]
+        vector = [float(value) for value in encoded.tolist()]
+        if len(vector) != self._expected_dim:
+            raise ValueError(
+                f"Expected {self._expected_dim}-dimensional embedding, got {len(vector)}"
+            )
+        return vector
 
     async def embed_query(self, text: str) -> list[float]:
         """Asynchronously encode a query string using the dedicated thread pool.
@@ -85,10 +112,10 @@ class SentenceTransformerEmbedder:
             text: Non-empty query string to embed.
 
         Returns:
-            Embedding vector as a list of floats.
+            Embedding vector as a list of floats of length expected_dim.
 
         Raises:
-            ValueError: If text is empty or whitespace-only.
+            ValueError: If text is empty/whitespace-only or encoded vector dimension mismatches.
         """
         stripped = text.strip()
         if not stripped:

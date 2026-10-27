@@ -39,7 +39,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="ClickHouse RAG Retrieval API", lifespan=lifespan)
 
 
-def get_repository(request: Request) -> VectorRepository:
+async def get_repository(request: Request) -> VectorRepository:
     """Retrieve the VectorRepository stored on application state."""
     repository: VectorRepository | None = getattr(request.app.state, "repository", None)
     if repository is None:
@@ -47,7 +47,7 @@ def get_repository(request: Request) -> VectorRepository:
     return repository
 
 
-def get_embedder(request: Request) -> Embedder:
+async def get_embedder(request: Request) -> Embedder:
     """Retrieve the Embedder stored on application state."""
     embedder: Embedder | None = getattr(request.app.state, "embedder", None)
     if embedder is None:

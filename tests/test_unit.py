@@ -8,15 +8,14 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from clickhouse_connect.driver.exceptions import DatabaseError, OperationalError
 from fastapi.testclient import TestClient
 
 from rag_api.config import Settings, get_settings
-from rag_api.embedder import SentenceTransformerEmbedder
+from rag_api.embedder import EXPECTED_EMBEDDING_DIM, SentenceTransformerEmbedder
 from rag_api.main import app, get_embedder, get_repository
 from rag_api.repository import VECTOR_SEARCH_SQL, VectorRepository
 from rag_api.schemas import DocumentResult
-
-EMBEDDING_DIM = 384
 
 
 class FakeEncodedVector:
@@ -33,9 +32,21 @@ class FakeEncodedVector:
 class FakeSentenceTransformerModel:
     """In-memory SentenceTransformer model double for unit testing SentenceTransformerEmbedder."""
 
-    def __init__(self, vector: Sequence[float] | None = None) -> None:
-        self.vector = list(vector) if vector is not None else [0.1] * EMBEDDING_DIM
+    def __init__(
+        self,
+        vector: Sequence[float] | None = None,
+        *,
+        reported_dim: int | None = None,
+    ) -> None:
+        self.vector = (
+            list(vector) if vector is not None else [0.1] * EXPECTED_EMBEDDING_DIM
+        )
+        self._reported_dim = reported_dim
         self.calls: list[tuple[str, bool, str]] = []
+
+    def get_embedding_dimension(self) -> int | None:
+        """Return the configured model embedding dimension if set."""
+        return self._reported_dim
 
     def encode(
         self,
@@ -52,7 +63,7 @@ class FakeEmbedder:
     """In-memory async Embedder double for FastAPI route unit tests."""
 
     def __init__(self, vector: list[float] | None = None) -> None:
-        self.vector = vector if vector is not None else [0.1] * EMBEDDING_DIM
+        self.vector = vector if vector is not None else [0.1] * EXPECTED_EMBEDDING_DIM
         self.queries: list[str] = []
         self.closed = False
 
@@ -81,10 +92,12 @@ class FakeAsyncClickHouseClient:
         *,
         ping_result: bool = True,
         ping_error: Exception | None = None,
+        query_error: Exception | None = None,
         rows: list[tuple[str, str]] | None = None,
     ) -> None:
         self.ping_result = ping_result
         self.ping_error = ping_error
+        self.query_error = query_error
         self.rows = rows if rows is not None else [("stub.md", "Stub document body")]
         self.queries: list[tuple[str, dict[str, Any] | None]] = []
         self.closed = False
@@ -100,8 +113,10 @@ class FakeAsyncClickHouseClient:
         query: str,
         parameters: dict[str, Any] | None = None,
     ) -> FakeQueryResult:
-        """Record query and parameters and return configured rows."""
+        """Record query and parameters and return configured rows or raise query_error."""
         self.queries.append((query, parameters))
+        if self.query_error is not None:
+            raise self.query_error
         limit = len(self.rows)
         if parameters and "limit" in parameters:
             limit = int(parameters["limit"])
@@ -195,7 +210,7 @@ def test_search_with_fake_embedder_and_fake_repository_returns_200() -> None:
         rows=[("lightdash-and-clickhouse.md", "How to connect Lightdash to ClickHouse")]
     )
     repo = VectorRepository(client=fake_client)
-    fake_embedder = FakeEmbedder(vector=[0.1] * EMBEDDING_DIM)
+    fake_embedder = FakeEmbedder(vector=[0.1] * EXPECTED_EMBEDDING_DIM)
     app.dependency_overrides[get_repository] = lambda: repo
     app.dependency_overrides[get_embedder] = lambda: fake_embedder
     try:
@@ -217,7 +232,7 @@ def test_search_with_fake_embedder_and_fake_repository_returns_200() -> None:
         _, params = fake_client.queries[0]
         assert params is not None
         assert params["limit"] == 5
-        assert params["query_embedding"] == [0.1] * EMBEDDING_DIM
+        assert params["query_embedding"] == [0.1] * EXPECTED_EMBEDDING_DIM
     finally:
         app.dependency_overrides.clear()
 
@@ -228,7 +243,7 @@ def test_search_with_dependency_override_and_default_limit() -> None:
         rows=[(f"doc-{i}.md", f"Body {i} for lightdash") for i in range(10)]
     )
     repo = VectorRepository(client=fake_client)
-    fake_embedder = FakeEmbedder(vector=[0.25] * EMBEDDING_DIM)
+    fake_embedder = FakeEmbedder(vector=[0.25] * EXPECTED_EMBEDDING_DIM)
 
     app.dependency_overrides[get_repository] = lambda: repo
     app.dependency_overrides[get_embedder] = lambda: fake_embedder
@@ -242,7 +257,7 @@ def test_search_with_dependency_override_and_default_limit() -> None:
         assert len(data["results"]) == 5
         assert data["results"][0] == {"title": "doc-0.md", "body": "Body 0 for lightdash"}
         assert fake_client.queries[0][1] == {
-            "query_embedding": [0.25] * EMBEDDING_DIM,
+            "query_embedding": [0.25] * EXPECTED_EMBEDDING_DIM,
             "limit": 5,
         }
     finally:
@@ -255,7 +270,7 @@ def test_search_custom_limit_and_whitespace_stripping() -> None:
         rows=[(f"doc-{i}.md", f"Body {i}") for i in range(5)]
     )
     repo = VectorRepository(client=fake_client)
-    fake_embedder = FakeEmbedder(vector=[0.5] * EMBEDDING_DIM)
+    fake_embedder = FakeEmbedder(vector=[0.5] * EXPECTED_EMBEDDING_DIM)
 
     app.dependency_overrides[get_repository] = lambda: repo
     app.dependency_overrides[get_embedder] = lambda: fake_embedder
@@ -267,7 +282,7 @@ def test_search_custom_limit_and_whitespace_stripping() -> None:
         assert fake_embedder.queries == ["lightdash"]
         assert len(response.json()["results"]) == 3
         assert fake_client.queries[0][1] == {
-            "query_embedding": [0.5] * EMBEDDING_DIM,
+            "query_embedding": [0.5] * EXPECTED_EMBEDDING_DIM,
             "limit": 3,
         }
     finally:
@@ -322,14 +337,48 @@ def test_search_returns_503_when_embedder_not_initialized_on_app_state() -> None
         app.dependency_overrides.clear()
 
 
+def test_search_returns_503_when_clickhouse_query_fails_with_operational_error() -> None:
+    """Verify POST /search returns 503 when client.query raises OperationalError mid-run."""
+    fake_client = FakeAsyncClickHouseClient(
+        query_error=OperationalError("Connection reset by peer")
+    )
+    repo = VectorRepository(client=fake_client)
+    fake_embedder = FakeEmbedder(vector=[0.1] * EXPECTED_EMBEDDING_DIM)
+    app.dependency_overrides[get_repository] = lambda: repo
+    app.dependency_overrides[get_embedder] = lambda: fake_embedder
+    try:
+        client = TestClient(app)
+        response = client.post("/search", json={"query": "lightdash"})
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Database unavailable"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_vector_repository_propagates_non_connectivity_database_errors() -> None:
+    """Verify non-connectivity DatabaseError from ClickHouse is not masked as DatabaseUnavailableError."""
+    fake_client = FakeAsyncClickHouseClient(
+        query_error=DatabaseError("Code: 43. DB::Exception: Illegal types")
+    )
+    repo = VectorRepository(client=fake_client)
+
+    with pytest.raises(DatabaseError, match="Illegal types"):
+        asyncio.run(repo.search_by_vector([0.1] * EXPECTED_EMBEDDING_DIM, limit=5))
+
+
 def test_sentence_transformer_embedder_runs_on_worker_thread_and_closes() -> None:
     """Verify SentenceTransformerEmbedder offloads .encode() to its dedicated thread pool."""
-    fake_model = FakeSentenceTransformerModel(vector=[0.25, 0.5, 0.75])
+    expected_vector = [0.25] * EXPECTED_EMBEDDING_DIM
+    fake_model = FakeSentenceTransformerModel(
+        vector=expected_vector,
+        reported_dim=EXPECTED_EMBEDDING_DIM,
+    )
     embedder = SentenceTransformerEmbedder(max_workers=2, model=fake_model)
     try:
         result = asyncio.run(embedder.embed_query("  Can I use Lightdash?  "))
 
-        assert result == [0.25, 0.5, 0.75]
+        assert result == expected_vector
         assert len(fake_model.calls) == 1
         sentence, convert_to_numpy, thread_name = fake_model.calls[0]
         assert sentence == "Can I use Lightdash?"
@@ -342,17 +391,28 @@ def test_sentence_transformer_embedder_runs_on_worker_thread_and_closes() -> Non
         asyncio.run(embedder.embed_query("after close"))
 
 
-def test_sentence_transformer_embedder_validates_inputs() -> None:
-    """Verify SentenceTransformerEmbedder validates max_workers >= 1 and non-empty text."""
+def test_sentence_transformer_embedder_validates_inputs_and_dimensions() -> None:
+    """Verify SentenceTransformerEmbedder validates max_workers, expected_dim, model dim, and output dim."""
     fake_model = FakeSentenceTransformerModel()
 
     with pytest.raises(ValueError, match="max_workers must be at least 1"):
         SentenceTransformerEmbedder(max_workers=0, model=fake_model)
 
-    embedder = SentenceTransformerEmbedder(max_workers=1, model=fake_model)
+    with pytest.raises(ValueError, match="expected_dim must be at least 1"):
+        SentenceTransformerEmbedder(expected_dim=0, model=fake_model)
+
+    wrong_dim_model = FakeSentenceTransformerModel(reported_dim=768)
+    with pytest.raises(ValueError, match="produces 768-dimensional embeddings, expected 384"):
+        SentenceTransformerEmbedder(model=wrong_dim_model)
+
+    wrong_output_model = FakeSentenceTransformerModel(vector=[0.1, 0.2, 0.3])
+    embedder = SentenceTransformerEmbedder(max_workers=1, model=wrong_output_model)
     try:
         with pytest.raises(ValueError, match="text must not be empty"):
             asyncio.run(embedder.embed_query("   "))
+
+        with pytest.raises(ValueError, match="Expected 384-dimensional embedding, got 3"):
+            asyncio.run(embedder.embed_query("lightdash"))
     finally:
         embedder.close()
 
@@ -434,7 +494,7 @@ def test_vector_repository_search_by_vector_executes_parameterized_cosine_query(
         ]
     )
     repo = VectorRepository(client=fake_client)
-    query_vector = [0.1] * EMBEDDING_DIM
+    query_vector = [0.1] * EXPECTED_EMBEDDING_DIM
 
     results = asyncio.run(repo.search_by_vector(query_vector, limit=2))
 
@@ -451,14 +511,17 @@ def test_vector_repository_search_by_vector_executes_parameterized_cosine_query(
 
 
 def test_vector_repository_search_by_vector_validates_inputs() -> None:
-    """Verify VectorRepository.search_by_vector rejects empty embeddings and invalid limits."""
+    """Verify VectorRepository.search_by_vector rejects empty/wrong-dimension embeddings and invalid limits."""
     repo = VectorRepository(client=FakeAsyncClickHouseClient())
 
     with pytest.raises(ValueError, match="embedding must not be empty"):
         asyncio.run(repo.search_by_vector([], limit=5))
 
+    with pytest.raises(ValueError, match="embedding must have length 384, got 3"):
+        asyncio.run(repo.search_by_vector([0.1, 0.2, 0.3], limit=5))
+
     with pytest.raises(ValueError, match="limit must be at least 1"):
-        asyncio.run(repo.search_by_vector([0.1] * EMBEDDING_DIM, limit=0))
+        asyncio.run(repo.search_by_vector([0.1] * EXPECTED_EMBEDDING_DIM, limit=0))
 
 
 def test_vector_repository_close_closes_underlying_client() -> None:
