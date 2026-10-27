@@ -39,9 +39,9 @@ services:
       CLICKHOUSE_DB: embeddings
       CLICKHOUSE_USER: vectordbuser
       CLICKHOUSE_PASSWORD: pwd_vectordb
-      HF_HOME: /root/.cache/huggingface
+      HF_HOME: /cache/huggingface
     volumes:
-      - huggingface-cache:/root/.cache/huggingface
+      - huggingface-cache:/cache/huggingface
     depends_on:
       clickhouse:
         condition: service_healthy

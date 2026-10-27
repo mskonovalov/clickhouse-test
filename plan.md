@@ -9,12 +9,12 @@
 | **Schemas** | Pydantic `BaseModel` |
 | **Embedder Interface** | Async `Embedder` `Protocol` (`async def embed_query(self, text: str) -> list[float]`) so it can be swapped for an external network embedding API without changing callers |
 | **Local Embedder** | `SentenceTransformerEmbedder` (`sentence-transformers/all-MiniLM-L6-v2`, CPU-only PyTorch wheels on Linux) offloading CPU-bound `.encode()` to a dedicated `ThreadPoolExecutor` via `loop.run_in_executor` |
-| **Model & Data Persistence** | Named Docker volumes for both ClickHouse (`clickhouse-data:/var/lib/clickhouse`) and Hugging Face model cache (`huggingface-cache:/root/.cache/huggingface`) |
+| **Model & Data Persistence** | Named Docker volumes for both ClickHouse (`clickhouse-data:/var/lib/clickhouse`) and Hugging Face model cache (`huggingface-cache:/cache/huggingface`) |
 | **Vector Search** | Async `VectorRepository` using `clickhouse_connect.get_async_client` (`autogenerate_session_id=False`) and `cosineDistance(embeddings, {query_embedding:Array(Float32)}) ASC LIMIT {limit:UInt32}` |
 | **Search Endpoint** | `POST /search` accepting `{"query": "...", "limit": 5}` (`limit` optional, default `5`, range `1..50`) |
 | **Search Response** | `{"results": [{"title": "...", "body": "..."}]}` (raw chunks as-is; note deduplication by `title` in README / Next steps) |
 | **Health Endpoint** | `GET /health` verifying ClickHouse connectivity |
-| **Layout & Runtime** | `src/rag_api/` package layout; runnable both locally via `uv` and as a containerized `api` service in `docker-compose.yml` |
+| **Layout & Runtime** | `src/rag_api/` package layout; runnable both locally via `uv` and as a multi-stage (`builder` -> `python:3.12-slim-bookworm` `runtime`), non-root (`appuser`) containerized `api` service in `docker-compose.yml` |
 | **Tests** | Unit tests (mocked async embedder & DB + FastAPI `TestClient`) and integration tests (real model + live ClickHouse) |
 | **Extensions** | None for now (core retrieval first; can layer one on afterward) |
 
@@ -74,10 +74,12 @@ Every step produces a runnable, testable increment before moving on to the next.
 **Goal:** Containerize the FastAPI service with persistent volumes for both the ClickHouse dataset and Hugging Face cache, and run it alongside ClickHouse in Docker Compose.
 
 - **Changes:**
-  - Create `Dockerfile` for the API service using `ghcr.io/astral-sh/uv:python3.12-bookworm-slim` that installs dependencies from `uv.lock` and starts `uvicorn rag_api.main:app --host 0.0.0.0 --port 8000`.
+  - Create a multi-stage `Dockerfile` for the API service:
+    - `builder` stage (`ghcr.io/astral-sh/uv:python3.12-bookworm-slim`) that installs dependencies and `rag_api` (`--no-editable`) from `uv.lock` into `/app/.venv`.
+    - `runtime` stage (`python:3.12-slim-bookworm` without `uv`) that creates a non-root `appuser` (UID/GID `10001`), pre-creates `/cache/huggingface` owned by `appuser:appuser`, copies `/app/.venv` from `builder`, runs as `USER appuser`, and starts `uvicorn rag_api.main:app --host 0.0.0.0 --port 8000`.
   - Update `docker-compose.yml`:
     - *Technical safeguard (ClickHouse Alpine healthcheck & first-boot Hugging Face Parquet download):* `clickhouse/clickhouse-server:24.3-alpine` does not have `curl` installed, and `02-load-data.sql` downloads a Parquet file from Hugging Face on first startup (which can take 15–60s). Configure the `clickhouse` healthcheck using `clickhouse-client` (`SELECT count() FROM embeddings.vectors`) with `start_period: 60s` so Docker waits until the initial dataset is loaded into the persistent `clickhouse-data:/var/lib/clickhouse` volume.
-    - *Technical safeguard (Persistent Hugging Face model cache):* Add a named Docker volume `huggingface-cache` mounted at `/root/.cache/huggingface` on the `api` container (with `HF_HOME: /root/.cache/huggingface`) so Hugging Face downloads persist across container restarts and image rebuilds instead of re-downloading.
+    - *Technical safeguard (Persistent Hugging Face model cache):* Add a named Docker volume `huggingface-cache` mounted at `/cache/huggingface` on the `api` container (with `HF_HOME: /cache/huggingface`) so Hugging Face downloads are writable by `appuser` and persist across container restarts and image rebuilds instead of re-downloading.
     - Add the `api` service on port `8000:8000` with `CLICKHOUSE_HOST: clickhouse` and `depends_on: clickhouse: condition: service_healthy`.
 - **Verification:**
   - `docker compose up --build -d` builds and starts both `clickhouse` and `api` containers cleanly.
