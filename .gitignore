@@ -1,0 +1,19 @@
+# Python / uv
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Environment / OS / IDE
+.env
+.DS_Store
+
+# Agent skills
+.agents/
+.claude/
+skills-lock.json
