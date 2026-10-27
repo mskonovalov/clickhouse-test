@@ -1,6 +1,7 @@
 """Async ClickHouse repository for vector similarity search."""
 
 import asyncio
+import json
 from collections.abc import Sequence
 from typing import Any, Protocol, Self
 
@@ -15,6 +16,23 @@ FROM vectors
 ORDER BY cosineDistance(embeddings, {query_embedding:Array(Float32)}) ASC
 LIMIT {limit:UInt32}
 """.strip()
+
+
+def _extract_title(raw_metadata: Any) -> str:
+    """Extract the document title from a ClickHouse metadata value.
+
+    Supports both JSON strings such as '{"source_file": "lightdash-and-clickhouse.md"}'
+    and plain filename strings.
+    """
+    text = str(raw_metadata)
+    if text.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and isinstance(parsed.get("source_file"), str):
+                return parsed["source_file"]
+        except json.JSONDecodeError:
+            pass
+    return text
 
 
 class DatabaseUnavailableError(RuntimeError):
@@ -142,7 +160,7 @@ class VectorRepository:
             raise DatabaseUnavailableError("ClickHouse query failed") from exc
 
         return [
-            DocumentResult(title=str(row[0]), body=str(row[1]))
+            DocumentResult(title=_extract_title(row[0]), body=str(row[1]))
             for row in result.result_rows
         ]
 

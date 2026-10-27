@@ -10,6 +10,8 @@ dependencies = [
     "clickhouse-connect[async]",
     "fastapi",
     "pydantic-settings",
+    "sentence-transformers",
+    "torch",
     "uvicorn[standard]",
 ]
 
@@ -17,6 +19,16 @@ dependencies = [
 dev = [
     "httpx",
     "pytest",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
 
 [tool.hatch.build.targets.wheel]

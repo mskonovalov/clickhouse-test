@@ -1,6 +1,8 @@
 """Unit tests for the RAG API."""
 
 import asyncio
+import threading
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -9,9 +11,59 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rag_api.config import Settings, get_settings
-from rag_api.main import EMBEDDING_DIM, app, get_query_embedder, get_repository
+from rag_api.embedder import SentenceTransformerEmbedder
+from rag_api.main import app, get_embedder, get_repository
 from rag_api.repository import VECTOR_SEARCH_SQL, VectorRepository
 from rag_api.schemas import DocumentResult
+
+EMBEDDING_DIM = 384
+
+
+class FakeEncodedVector:
+    """Array-like encoded vector double supporting .tolist()."""
+
+    def __init__(self, values: Sequence[float]) -> None:
+        self._values = list(values)
+
+    def tolist(self) -> Sequence[float]:
+        """Return the underlying float values."""
+        return self._values
+
+
+class FakeSentenceTransformerModel:
+    """In-memory SentenceTransformer model double for unit testing SentenceTransformerEmbedder."""
+
+    def __init__(self, vector: Sequence[float] | None = None) -> None:
+        self.vector = list(vector) if vector is not None else [0.1] * EMBEDDING_DIM
+        self.calls: list[tuple[str, bool, str]] = []
+
+    def encode(
+        self,
+        sentences: str,
+        *,
+        convert_to_numpy: bool = True,
+    ) -> FakeEncodedVector:
+        """Record call arguments and thread name and return a fake vector."""
+        self.calls.append((sentences, convert_to_numpy, threading.current_thread().name))
+        return FakeEncodedVector(self.vector)
+
+
+class FakeEmbedder:
+    """In-memory async Embedder double for FastAPI route unit tests."""
+
+    def __init__(self, vector: list[float] | None = None) -> None:
+        self.vector = vector if vector is not None else [0.1] * EMBEDDING_DIM
+        self.queries: list[str] = []
+        self.closed = False
+
+    async def embed_query(self, text: str) -> list[float]:
+        """Record query text and return the configured embedding vector."""
+        self.queries.append(text)
+        return self.vector
+
+    def close(self) -> None:
+        """Mark the fake embedder as closed."""
+        self.closed = True
 
 
 class FakeQueryResult:
@@ -137,13 +189,15 @@ def test_settings_env_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path)
     assert settings.embedder_max_workers == 8
 
 
-def test_search_with_default_stub_embedder_and_fake_repository_returns_200() -> None:
-    """Verify POST /search uses the 384-dim non-zero stub vector and returns matching schema."""
+def test_search_with_fake_embedder_and_fake_repository_returns_200() -> None:
+    """Verify POST /search embeds query via Embedder and queries VectorRepository."""
     fake_client = FakeAsyncClickHouseClient(
         rows=[("lightdash-and-clickhouse.md", "How to connect Lightdash to ClickHouse")]
     )
     repo = VectorRepository(client=fake_client)
+    fake_embedder = FakeEmbedder(vector=[0.1] * EMBEDDING_DIM)
     app.dependency_overrides[get_repository] = lambda: repo
+    app.dependency_overrides[get_embedder] = lambda: fake_embedder
     try:
         client = TestClient(app)
         response = client.post("/search", json={"query": "lightdash"})
@@ -158,6 +212,7 @@ def test_search_with_default_stub_embedder_and_fake_repository_returns_200() -> 
                 }
             ]
         }
+        assert fake_embedder.queries == ["lightdash"]
         assert len(fake_client.queries) == 1
         _, params = fake_client.queries[0]
         assert params is not None
@@ -169,24 +224,20 @@ def test_search_with_default_stub_embedder_and_fake_repository_returns_200() -> 
 
 def test_search_with_dependency_override_and_default_limit() -> None:
     """Verify POST /search uses default limit=5 and forwards embedding to repository."""
-    captured_queries: list[str] = []
     fake_client = FakeAsyncClickHouseClient(
         rows=[(f"doc-{i}.md", f"Body {i} for lightdash") for i in range(10)]
     )
     repo = VectorRepository(client=fake_client)
-
-    async def fake_embed_query(query: str) -> list[float]:
-        captured_queries.append(query)
-        return [0.25] * EMBEDDING_DIM
+    fake_embedder = FakeEmbedder(vector=[0.25] * EMBEDDING_DIM)
 
     app.dependency_overrides[get_repository] = lambda: repo
-    app.dependency_overrides[get_query_embedder] = lambda: fake_embed_query
+    app.dependency_overrides[get_embedder] = lambda: fake_embedder
     try:
         client = TestClient(app)
         response = client.post("/search", json={"query": "lightdash"})
 
         assert response.status_code == 200
-        assert captured_queries == ["lightdash"]
+        assert fake_embedder.queries == ["lightdash"]
         data = response.json()
         assert len(data["results"]) == 5
         assert data["results"][0] == {"title": "doc-0.md", "body": "Body 0 for lightdash"}
@@ -200,24 +251,20 @@ def test_search_with_dependency_override_and_default_limit() -> None:
 
 def test_search_custom_limit_and_whitespace_stripping() -> None:
     """Verify POST /search strips whitespace on query and forwards custom limit."""
-    captured_queries: list[str] = []
     fake_client = FakeAsyncClickHouseClient(
         rows=[(f"doc-{i}.md", f"Body {i}") for i in range(5)]
     )
     repo = VectorRepository(client=fake_client)
-
-    async def fake_embed_query(query: str) -> list[float]:
-        captured_queries.append(query)
-        return [0.5] * EMBEDDING_DIM
+    fake_embedder = FakeEmbedder(vector=[0.5] * EMBEDDING_DIM)
 
     app.dependency_overrides[get_repository] = lambda: repo
-    app.dependency_overrides[get_query_embedder] = lambda: fake_embed_query
+    app.dependency_overrides[get_embedder] = lambda: fake_embedder
     try:
         client = TestClient(app)
         response = client.post("/search", json={"query": "  lightdash  ", "limit": 3})
 
         assert response.status_code == 200
-        assert captured_queries == ["lightdash"]
+        assert fake_embedder.queries == ["lightdash"]
         assert len(response.json()["results"]) == 3
         assert fake_client.queries[0][1] == {
             "query_embedding": [0.5] * EMBEDDING_DIM,
@@ -246,7 +293,9 @@ def test_search_validation_errors_return_422(payload: dict[str, Any]) -> None:
     """Verify invalid POST /search payloads are rejected with HTTP 422."""
     fake_client = FakeAsyncClickHouseClient()
     repo = VectorRepository(client=fake_client)
+    fake_embedder = FakeEmbedder()
     app.dependency_overrides[get_repository] = lambda: repo
+    app.dependency_overrides[get_embedder] = lambda: fake_embedder
     try:
         client = TestClient(app)
         response = client.post("/search", json=payload)
@@ -254,6 +303,58 @@ def test_search_validation_errors_return_422(payload: dict[str, Any]) -> None:
         assert response.status_code == 422
     finally:
         app.dependency_overrides.clear()
+
+
+def test_search_returns_503_when_embedder_not_initialized_on_app_state() -> None:
+    """Verify POST /search returns 503 if app.state.embedder is missing."""
+    fake_client = FakeAsyncClickHouseClient()
+    repo = VectorRepository(client=fake_client)
+    app.dependency_overrides[get_repository] = lambda: repo
+    if hasattr(app.state, "embedder"):
+        delattr(app.state, "embedder")
+    try:
+        client = TestClient(app)
+        response = client.post("/search", json={"query": "lightdash"})
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Embedder unavailable"}
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sentence_transformer_embedder_runs_on_worker_thread_and_closes() -> None:
+    """Verify SentenceTransformerEmbedder offloads .encode() to its dedicated thread pool."""
+    fake_model = FakeSentenceTransformerModel(vector=[0.25, 0.5, 0.75])
+    embedder = SentenceTransformerEmbedder(max_workers=2, model=fake_model)
+    try:
+        result = asyncio.run(embedder.embed_query("  Can I use Lightdash?  "))
+
+        assert result == [0.25, 0.5, 0.75]
+        assert len(fake_model.calls) == 1
+        sentence, convert_to_numpy, thread_name = fake_model.calls[0]
+        assert sentence == "Can I use Lightdash?"
+        assert convert_to_numpy is True
+        assert thread_name.startswith("embedder")
+    finally:
+        embedder.close()
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(embedder.embed_query("after close"))
+
+
+def test_sentence_transformer_embedder_validates_inputs() -> None:
+    """Verify SentenceTransformerEmbedder validates max_workers >= 1 and non-empty text."""
+    fake_model = FakeSentenceTransformerModel()
+
+    with pytest.raises(ValueError, match="max_workers must be at least 1"):
+        SentenceTransformerEmbedder(max_workers=0, model=fake_model)
+
+    embedder = SentenceTransformerEmbedder(max_workers=1, model=fake_model)
+    try:
+        with pytest.raises(ValueError, match="text must not be empty"):
+            asyncio.run(embedder.embed_query("   "))
+    finally:
+        embedder.close()
 
 
 def test_vector_repository_create_connects_lazily_and_disables_autogenerate_session_id(
@@ -293,6 +394,11 @@ def test_lifespan_starts_and_serves_503_when_clickhouse_is_down_at_startup(
     """Verify app starts cleanly when ClickHouse is unreachable at boot and returns 503 on /health and /search."""
     mock_get_async_client = AsyncMock(side_effect=ConnectionError("ClickHouse down"))
     monkeypatch.setattr("rag_api.repository.clickhouse_connect.get_async_client", mock_get_async_client)
+    fake_embedder = FakeEmbedder()
+    monkeypatch.setattr(
+        "rag_api.main.SentenceTransformerEmbedder",
+        lambda **_kwargs: fake_embedder,
+    )
 
     with TestClient(app) as client:
         health_response = client.get("/health")
@@ -302,6 +408,8 @@ def test_lifespan_starts_and_serves_503_when_clickhouse_is_down_at_startup(
         search_response = client.post("/search", json={"query": "lightdash"})
         assert search_response.status_code == 503
         assert search_response.json() == {"detail": "Database unavailable"}
+
+    assert fake_embedder.closed is True
 
 
 def test_vector_repository_ping_handles_success_failure_and_exceptions() -> None:
@@ -321,7 +429,7 @@ def test_vector_repository_search_by_vector_executes_parameterized_cosine_query(
     """Verify VectorRepository.search_by_vector binds parameters and maps rows to DocumentResult."""
     fake_client = FakeAsyncClickHouseClient(
         rows=[
-            ("doc-1.md", "First chunk body"),
+            ('  {"source_file": "doc-1.md"}', "First chunk body"),
             ("doc-2.md", "Second chunk body"),
         ]
     )

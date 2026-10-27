@@ -1,4 +1,4 @@
-"""Integration tests against the live ClickHouse container."""
+"""Integration tests against the live ClickHouse container and real embedding model."""
 
 import asyncio
 
@@ -6,8 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from rag_api.config import get_settings
-from rag_api.main import EMBEDDING_DIM, app
+from rag_api.main import app
 from rag_api.repository import VectorRepository
+
+EMBEDDING_DIM = 384
 
 
 @pytest.mark.integration
@@ -32,19 +34,33 @@ def test_vector_repository_live_ping_and_search() -> None:
 
 
 @pytest.mark.integration
-def test_fastapi_app_live_health_and_search() -> None:
-    """Verify FastAPI /health and /search endpoints against live ClickHouse via lifespan."""
+def test_end_to_end_rag_retrieval_with_real_embedder_and_clickhouse() -> None:
+    """Verify end-to-end semantic retrieval with SentenceTransformerEmbedder and live ClickHouse."""
     with TestClient(app) as client:
         health_response = client.get("/health")
         assert health_response.status_code == 200
         assert health_response.json() == {"status": "ok"}
 
-        search_response = client.post("/search", json={"query": "lightdash", "limit": 3})
+        search_response = client.post(
+            "/search",
+            json={"query": "Can I create a visualization with Lightdash?", "limit": 5},
+        )
         assert search_response.status_code == 200
         payload = search_response.json()
         assert "results" in payload
-        assert len(payload["results"]) == 3
-        for item in payload["results"]:
+        results = payload["results"]
+        assert len(results) == 5
+        for item in results:
             assert set(item.keys()) == {"title", "body"}
             assert item["title"].strip() != ""
             assert item["body"].strip() != ""
+
+        titles = [item["title"] for item in results]
+        assert "lightdash-and-clickhouse.md" in titles
+
+        limit_two_response = client.post(
+            "/search",
+            json={"query": "Can I create a visualization with Lightdash?", "limit": 2},
+        )
+        assert limit_two_response.status_code == 200
+        assert len(limit_two_response.json()["results"]) == 2
